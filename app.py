@@ -72,7 +72,7 @@ class EmailFinder:
             url = urljoin(base_url, page)
             try:
                 # Shorter timeout + no redirects = prevents hanging or loops
-                r = self.session.get(url, timeout=5, allow_redirects=False)
+                r = self.session.get(url, timeout=12, allow_redirects=False)
                 if r.status_code not in (200, 301, 302):
                     continue
                 soup = BeautifulSoup(r.text, 'html.parser')
