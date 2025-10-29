@@ -1,12 +1,19 @@
 from flask import Flask, request, jsonify
-import re, requests, time, dns.resolver, logging
+import re, requests, time, dns.resolver, logging, sys
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from functools import lru_cache
 from typing import List, Dict, Set
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+# --- Logging setup for Render ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True
+)
 logger = logging.getLogger(__name__)
 
 EMAIL_RE = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
@@ -144,14 +151,30 @@ finder = EmailFinder()
 @app.route('/find-email', methods=['POST','GET'])
 def find_email():
     try:
-        data = request.get_json() or request.args.to_dict()
+        logger.info(f"Request received: {request.method} {request.url}")
+
+        # Handle GET and POST separately
+        if request.method == 'POST':
+            if request.is_json:
+                data = request.get_json()
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": "Unsupported Media Type: POST requests must include 'Content-Type: application/json'"
+                }), 415
+        else:
+            data = request.args.to_dict()
+
         company_name = data.get('company_name') or data.get('company')
         country = data.get('country', '')
         verify = str(data.get('verify', 'false')).lower() == 'true'
+
         if not company_name:
             return jsonify({"success": False, "error": "Missing 'company_name'"}), 400
+
         result = finder.find_company_emails(company_name, country, verify)
         return jsonify(result)
+
     except Exception as e:
         logger.error(f"Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -161,4 +184,5 @@ def health():
     return jsonify({"status": "healthy"})
 
 if __name__ == '__main__':
+    logger.info("✅ Flask app starting successfully...")
     app.run(host='0.0.0.0', port=8080, debug=True)
