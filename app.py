@@ -7,7 +7,7 @@ from typing import List, Dict, Set
 
 app = Flask(__name__)
 
-# --- Logging setup for Render ---
+# --- Logging setup ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -29,6 +29,7 @@ INVALID_PREFIXES = {
     'support@example','info@example','sales@example'
 }
 
+
 class EmailFinder:
     def __init__(self):
         self.session = requests.Session()
@@ -48,7 +49,7 @@ class EmailFinder:
         query = f"{company_name} {country} official website".strip()
         url = "https://html.duckduckgo.com/html/"
         try:
-            r = self.session.post(url, data={'q': query}, timeout=8)
+            r = self.session.post(url, data={'q': query}, timeout=10)
             soup = BeautifulSoup(r.text, 'html.parser')
             for link in soup.find_all('a', class_='result__a'):
                 href = link.get('href')
@@ -71,10 +72,8 @@ class EmailFinder:
         for page in pages:
             url = urljoin(base_url, page)
             try:
-                # Shorter timeout + no redirects = prevents hanging or loops
-                r = self.session.get(url, timeout=12, allow_redirects=False)
-                if r.status_code not in (200, 301, 302):
-                    continue
+                r = self.session.get(url, timeout=12, allow_redirects=True)
+                r.raise_for_status()
                 soup = BeautifulSoup(r.text, 'html.parser')
 
                 for mailto in soup.find_all('a', href=re.compile(r'^mailto:')):
@@ -86,7 +85,7 @@ class EmailFinder:
                     if self._is_valid_email(email):
                         found_emails.add(email.lower())
 
-                time.sleep(0.5)
+                time.sleep(1)  # small delay to avoid blocks
 
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Request failed for {url}: {e}")
@@ -146,7 +145,9 @@ class EmailFinder:
                     "all_emails": emails, "success": True}
         return {"company": company_name, "domain": domain, "emails": emails, "success": True}
 
+
 finder = EmailFinder()
+
 
 @app.route('/find-email', methods=['POST','GET'])
 def find_email():
@@ -179,9 +180,11 @@ def find_email():
         logger.error(f"Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "healthy"})
+
 
 if __name__ == '__main__':
     logger.info("✅ Flask app starting successfully...")
