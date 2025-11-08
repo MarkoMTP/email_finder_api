@@ -3,11 +3,17 @@ import re, asyncio, httpx, dns.resolver, logging, sys, os, random, string, smtpl
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from functools import lru_cache
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Set
 from dotenv import load_dotenv
 
 # --- Load environment ---
 load_dotenv()
+
+# --- Fix asyncio reuse issue ---
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
 
 app = Flask(__name__)
 
@@ -57,7 +63,6 @@ class EmailFinder:
         if fallback and self._similar(company_name, fallback) > 0.4:
             return fallback
 
-        # Fallback guess
         slug = re.sub(r'[^a-z0-9]', '', company_name.lower())
         for tld in ['.com', '.it', '.co.uk', '.fr', '.es', '.ch']:
             candidate = f"{slug}{tld}"
@@ -123,7 +128,7 @@ class EmailFinder:
                 for email in EMAIL_RE.findall(r.text):
                     if self._is_valid_email(email):
                         found.add(email.lower())
-                await asyncio.sleep(random.uniform(0.05, 0.15))  # keep anti-block delay
+                await asyncio.sleep(random.uniform(0.05, 0.15))
                 return found
             except Exception as e:
                 logger.debug(f"Error fetching {url}: {e}")
@@ -174,7 +179,6 @@ class EmailFinder:
 
 finder = EmailFinder()
 
-
 @app.route('/find-email', methods=['POST','GET'])
 def find_email():
     try:
@@ -192,6 +196,7 @@ def find_email():
         if not company_name:
             return jsonify({"success": False, "error": "Missing 'company_name'"}), 400
 
+        # Each request uses a fresh event loop safely
         result = asyncio.run(finder.find_company_emails(company_name, country))
         return jsonify(result)
 
