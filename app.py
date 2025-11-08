@@ -1,20 +1,16 @@
 from flask import Flask, request, jsonify
-import re, asyncio, httpx, dns.resolver, logging, sys, os, random, string, smtplib, time
+import re, asyncio, httpx, dns.resolver, logging, sys, os, random, string, smtplib
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from functools import lru_cache
 from typing import List, Dict, Set
 from dotenv import load_dotenv
+import difflib
 
 # --- Load environment ---
 load_dotenv()
 
-# --- Fix asyncio reuse issue ---
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    asyncio.set_event_loop(asyncio.new_event_loop())
-
+# --- Flask setup ---
 app = Flask(__name__)
 
 # --- Logging setup ---
@@ -29,17 +25,23 @@ logger = logging.getLogger(__name__)
 # --- Constants ---
 EMAIL_RE = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
 
-DISPOSABLE_DOMAINS = {'tempmail.com','guerrillamail.com','mailinator.com','10minutemail.com'}
+DISPOSABLE_DOMAINS = {'tempmail.com', 'guerrillamail.com', 'mailinator.com', '10minutemail.com'}
 GENERIC_DOMAINS = {
-    'godaddy.com','wix.com','wordpress.com','squarespace.com','gmail.com','yahoo.com','hotmail.com',
-    'outlook.com','aol.com','latofonts.com','googlefonts.com','typekit.com','fontawesome.com',
-    'cloudflare.com','amazonaws.com','azurewebsites.net','example.com','test.com','localhost'
+    'godaddy.com', 'wix.com', 'wordpress.com', 'squarespace.com', 'gmail.com', 'yahoo.com',
+    'hotmail.com', 'outlook.com', 'aol.com', 'typekit.com', 'fontawesome.com', 'cloudflare.com',
+    'amazonaws.com', 'azurewebsites.net', 'example.com', 'test.com', 'localhost'
 }
 INVALID_PREFIXES = {
-    'noreply','no-reply','donotreply','do-not-reply','filler','test','admin','postmaster','webmaster',
-    'support@example','info@example','sales@example'
+    'noreply', 'no-reply', 'donotreply', 'do-not-reply', 'filler', 'test', 'admin', 'postmaster',
+    'webmaster', 'support@example', 'info@example', 'sales@example'
 }
 GENERIC_GUESSES = ("info", "contact", "hello", "office", "sales")
+
+# --- Invalid patterns (filters) ---
+INVALID_PATTERNS = (
+    "sentry.wixpress.com", "sentry-next.wixpress.com", "example@", "mysite.com",
+    "placeholder@", "donotreply@", "no-reply@", "user@domain.com"
+)
 
 ENABLE_SMTP = True
 SMTP_TIMEOUT = 4
@@ -63,6 +65,7 @@ class EmailFinder:
         if fallback and self._similar(company_name, fallback) > 0.4:
             return fallback
 
+        # fallback guessing
         slug = re.sub(r'[^a-z0-9]', '', company_name.lower())
         for tld in ['.com', '.it', '.co.uk', '.fr', '.es', '.ch']:
             candidate = f"{slug}{tld}"
@@ -101,7 +104,6 @@ class EmailFinder:
             return False
 
     def _similar(self, name: str, domain: str) -> float:
-        import difflib
         cleaned_name = re.sub(r'[^a-z0-9]', '', name.lower())
         cleaned_domain = domain.lower().split('.')[0]
         return difflib.SequenceMatcher(None, cleaned_name, cleaned_domain).ratio()
@@ -139,7 +141,9 @@ class EmailFinder:
             found_emails.update(res)
 
         domain_emails = [e for e in found_emails if target_domain in e]
-        return domain_emails or list(found_emails)
+        # filter out invalid or placeholder ones
+        filtered = [e for e in (domain_emails or found_emails) if not any(p in e for p in INVALID_PATTERNS)]
+        return filtered
 
     def _is_valid_email(self, email: str) -> bool:
         email = email.lower().strip()
@@ -156,7 +160,7 @@ class EmailFinder:
         for prefix in INVALID_PREFIXES:
             if local.startswith(prefix):
                 return False
-        if any(x in email for x in ['user@domain.com','example.','test@','dummy','fake','sample']):
+        if any(p in email for p in INVALID_PATTERNS):
             return False
         return True
 
@@ -173,16 +177,17 @@ class EmailFinder:
             logger.error(f"find_emails failed for {domain}: {e}")
             emails = []
 
+        await self.client.aclose()
         logger.info(f"✅ Found {len(emails)} email(s)")
         return {"company": company_name, "domain": domain, "emails": emails, "success": True}
 
 
-finder = EmailFinder()
-
+# --- Flask route ---
 @app.route('/find-email', methods=['POST','GET'])
 def find_email():
     try:
         logger.info(f"Request received: {request.method} {request.url}")
+
         if request.method == 'POST':
             if request.is_json:
                 data = request.get_json()
@@ -196,8 +201,15 @@ def find_email():
         if not company_name:
             return jsonify({"success": False, "error": "Missing 'company_name'"}), 400
 
-        # Each request uses a fresh event loop safely
-        result = asyncio.run(finder.find_company_emails(company_name, country))
+        # Create a new finder instance for every request
+        finder = EmailFinder()
+
+        # New event loop for each request
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(finder.find_company_emails(company_name, country))
+        loop.close()
+
         return jsonify(result)
 
     except Exception as e:
